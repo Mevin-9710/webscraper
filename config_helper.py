@@ -40,7 +40,17 @@ def load_profile_config():
 
     return src_profile_dir, src_profile_name, use_real_profile
 
-def copy_dir_incremental(src, dest, ignore_patterns_list):
+ALLOWLIST = {
+    "Local Storage",
+    "Network",
+    "Cookies",
+    "Preferences",
+    "Secure Preferences",
+    "Login Data",
+    "Web Data"
+}
+
+def copy_dir_incremental(src, dest, ignore_patterns_list=None, is_root=True):
     """Recursively copy files from src to dest incrementally (cross-platform alternative to rsync)."""
     if not os.path.exists(dest):
         os.makedirs(dest, exist_ok=True)
@@ -51,11 +61,16 @@ def copy_dir_incremental(src, dest, ignore_patterns_list):
         return
         
     for item in items:
+        # If we are at the root of the profile, only copy essential allowlisted files/folders
+        if is_root and item not in ALLOWLIST:
+            continue
+
         should_ignore = False
-        for pattern in ignore_patterns_list:
-            if fnmatch.fnmatch(item, pattern):
-                should_ignore = True
-                break
+        if ignore_patterns_list:
+            for pattern in ignore_patterns_list:
+                if fnmatch.fnmatch(item, pattern):
+                    should_ignore = True
+                    break
         if should_ignore:
             continue
             
@@ -76,7 +91,7 @@ def copy_dir_incremental(src, dest, ignore_patterns_list):
             continue
         
         if os.path.isdir(s):
-            copy_dir_incremental(s, d, ignore_patterns_list)
+            copy_dir_incremental(s, d, ignore_patterns_list, is_root=False)
         else:
             if not os.path.exists(d) or os.path.getmtime(s) > os.path.getmtime(d) or os.path.getsize(s) != os.path.getsize(d):
                 try:
