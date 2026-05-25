@@ -4,6 +4,7 @@ chrome-profile-temp/
 __pycache__/
 *.pyc
 .playwright-mcp/
+.playwright-cli/
 screenshots/
 *.png
 *.log
