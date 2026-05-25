@@ -3,6 +3,7 @@ import json
 import platform
 import shutil
 import fnmatch
+import stat
 
 CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
 
@@ -60,6 +61,19 @@ def copy_dir_incremental(src, dest, ignore_patterns_list):
             
         s = os.path.join(src, item)
         d = os.path.join(dest, item)
+        
+        # Skip symbolic links to prevent infinite recursion/loops
+        if os.path.islink(s):
+            continue
+            
+        # Ensure it's a regular file or directory (ignoring sockets, FIFOs, devices)
+        try:
+            st = os.lstat(s)
+            mode = st.st_mode
+            if not (stat.S_ISREG(mode) or stat.S_ISDIR(mode)):
+                continue
+        except Exception:
+            continue
         
         if os.path.isdir(s):
             copy_dir_incremental(s, d, ignore_patterns_list)
