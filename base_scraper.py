@@ -8,6 +8,7 @@ import os
 import logging
 from abc import ABC, abstractmethod
 from datetime import datetime
+from config_helper import load_profile_config, copy_dir_incremental
 
 
 class BaseScraper(ABC):
@@ -15,7 +16,18 @@ class BaseScraper(ABC):
 
     def __init__(self, platform_name: str):
         self.platform_name = platform_name
-        self.profile_dir = os.path.join(os.path.dirname(__file__), "chrome-profile")
+        
+        # Load profile configuration from config.json or OS defaults
+        self.src_profile_dir, self.src_profile_name, self.use_real_profile = load_profile_config()
+
+        if self.use_real_profile:
+            # We copy to a temp directory to bypass Chrome's SingletonLock
+            self.profile_dir = os.path.join(os.path.dirname(__file__), "chrome-profile-temp")
+            self.profile_name = self.src_profile_name
+        else:
+            self.profile_dir = os.path.join(os.path.dirname(__file__), "chrome-profile")
+            self.profile_name = None
+
         self.posted_posts_file = os.path.join(os.path.dirname(__file__), "posted_posts.json")
         self.comments_file = os.path.join(os.path.dirname(__file__), "comments.json")
         self.log_file = os.path.join(os.path.dirname(__file__), "scraper.log")
@@ -77,13 +89,62 @@ class BaseScraper(ABC):
             self.posted_posts[self.platform_name].append(post_id)
             self._save_posted_posts()
 
+    def _prepare_temp_profile(self):
+        """Clone the user's real profile (Profile 1) and Local State into a temp directory to bypass locks."""
+        import shutil
+
+        temp_profile_path = os.path.join(self.profile_dir, self.src_profile_name)
+        
+        # Create temp profile folder if not exists
+        os.makedirs(temp_profile_path, exist_ok=True)
+
+        # Copy Local State if it exists
+        src_local_state = os.path.join(self.src_profile_dir, "Local State")
+        if os.path.exists(src_local_state):
+            try:
+                shutil.copy2(src_local_state, os.path.join(self.profile_dir, "Local State"))
+            except Exception as e:
+                self.logger.warning(f"Failed to copy Local State: {e}")
+
+        # Sync Profile 1 folder excluding caches/large files (cross-platform copy_dir_incremental)
+        src_profile_path = os.path.join(self.src_profile_dir, self.src_profile_name)
+        self.logger.info(f"Syncing profile {self.src_profile_name} to temporary directory...")
+        try:
+            copy_dir_incremental(
+                src_profile_path,
+                temp_profile_path,
+                ["Cache*", "*Cache*", "Service Worker", "component_crx_cache"]
+            )
+        except Exception as e:
+            self.logger.error(f"Failed to sync profile directory: {e}")
+
+        # Delete any copied lock files to bypass the singleton lock
+        for root, dirs, files in os.walk(self.profile_dir):
+            for file in files:
+                if "Singleton" in file or file == "LOCK":
+                    try:
+                        os.remove(os.path.join(root, file))
+                    except OSError:
+                        pass
+
     def launch_browser(self):
         """Launch persistent browser with existing profile."""
-        os.makedirs(self.profile_dir, exist_ok=True)
+        if self.use_real_profile:
+            self._prepare_temp_profile()
+        else:
+            os.makedirs(self.profile_dir, exist_ok=True)
+            
         self.playwright = sync_playwright().start()
+        
+        launch_args = []
+        if self.profile_name:
+            launch_args.append(f"--profile-directory={self.profile_name}")
+            
         self.context = self.playwright.chromium.launch_persistent_context(
             user_data_dir=self.profile_dir,
             headless=False,
+            channel="chrome" if self.use_real_profile else None,
+            args=launch_args,
         )
         self.browser = self.context.browser
         self.page = self.context.new_page()
@@ -91,11 +152,23 @@ class BaseScraper(ABC):
     def close_browser(self):
         """Close the browser and stop playwright."""
         if self.page:
-            self.page.close()
+            try:
+                self.page.close()
+            except Exception:
+                pass
+            self.page = None
         if self.context:
-            self.context.close()
+            try:
+                self.context.close()
+            except Exception:
+                pass
+            self.context = None
         if self.playwright:
-            self.playwright.stop()
+            try:
+                self.playwright.stop()
+            except Exception:
+                pass
+            self.playwright = None
 
     def wait_for_selector(self, selector: str, timeout: int = 10000):
         """Wait for an element to be visible."""
@@ -138,8 +211,8 @@ class BaseScraper(ABC):
 
     def run(self, num_comments: int = 3):
         """Run the scraper - to be implemented by subclasses."""
-        self.launch_browser()
         try:
+            self.launch_browser()
             self.logger.info(f"Starting {self.platform_name} scraper")
             comments_posted = 0
 

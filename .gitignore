@@ -1,5 +1,6 @@
 # Ignore sensitive data and cache
 chrome-profile/
+chrome-profile-temp/
 __pycache__/
 *.pyc
 .playwright-mcp/
